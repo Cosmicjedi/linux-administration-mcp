@@ -1,0 +1,5 @@
+mcp[cli]>=1.2.0
+httpx
+paramiko>=3.0.0
+asyncssh>=2.14.0
+aiofiles>=23.2.1
