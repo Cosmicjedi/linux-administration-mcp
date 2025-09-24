@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Linux Administration MCP Server - Advanced SSH-based Linux server management with comprehensive logging
+Modified to work without required SSH secrets - credentials can be provided at runtime
 """
 import os
 import sys
@@ -25,21 +26,33 @@ logger = logging.getLogger("linux-admin-server")
 # Initialize MCP server
 mcp = FastMCP("linux-admin")
 
-# Configuration - LOG_DIR is now REQUIRED from environment
-LOG_DIR = os.environ.get("LOG_DIR")
-if not LOG_DIR:
-    logger.error("ERROR: LOG_DIR environment variable is required")
-    logger.error("Please set LOG_DIR to your desired logging directory path")
-    sys.exit(1)
-
+# Configuration - LOG_DIR is now OPTIONAL with fallback
+LOG_DIR = os.environ.get("LOG_DIR", "/tmp/linux-admin-logs")
 LOG_DIR = Path(LOG_DIR)
 
-# SSH Configuration
-SSH_KEY_PATH = os.environ.get("SSH_KEY_PATH", "/home/mcpuser/.ssh/id_rsa")
-SSH_KNOWN_HOSTS = os.environ.get("SSH_KNOWN_HOSTS", "/home/mcpuser/.ssh/known_hosts")
-SSH_CONFIG_PATH = os.environ.get("SSH_CONFIG_PATH", "/home/mcpuser/.ssh/config")
+# Create log directory if it doesn't exist
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Log directory configured: {LOG_DIR}")
+except Exception as e:
+    logger.warning(f"Could not create log directory {LOG_DIR}: {e}")
+    # Use temp directory as fallback
+    LOG_DIR = Path("/tmp/linux-admin-logs")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Using fallback log directory: {LOG_DIR}")
+
+# SSH Configuration - all optional with defaults
+SSH_KEY_PATH = os.environ.get("SSH_KEY_PATH", "")  # Empty string if not set
+SSH_KNOWN_HOSTS = os.environ.get("SSH_KNOWN_HOSTS", "")  # Empty string if not set
+SSH_CONFIG_PATH = os.environ.get("SSH_CONFIG_PATH", "")  # Empty string if not set
 DEFAULT_SSH_PORT = 22
 DEFAULT_SSH_TIMEOUT = 30
+
+# Log if SSH key paths are configured
+if SSH_KEY_PATH:
+    logger.info(f"SSH key path configured: {SSH_KEY_PATH}")
+else:
+    logger.info("No default SSH key path configured - credentials must be provided at runtime")
 
 # === UTILITY FUNCTIONS ===
 
@@ -88,15 +101,31 @@ async def establish_ssh_connection(hostname: str, port: int, username: str, pass
             'host': hostname,
             'port': port,
             'username': username,
-            'known_hosts': SSH_KNOWN_HOSTS if os.path.exists(SSH_KNOWN_HOSTS) else None
+            'known_hosts': None  # Disable host key checking for flexibility
         }
         
+        # Authentication priority:
+        # 1. Password if provided
+        # 2. Specific key path if provided
+        # 3. Default key path if it exists
+        # 4. Let asyncssh try default locations (~/.ssh/id_*)
+        
         if password:
+            logger.info(f"Using password authentication for {username}@{hostname}")
             connect_args['password'] = password
         elif key_path and os.path.exists(key_path):
+            logger.info(f"Using SSH key from {key_path}")
             connect_args['client_keys'] = [key_path]
-        elif os.path.exists(SSH_KEY_PATH):
+        elif SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
+            logger.info(f"Using default SSH key from {SSH_KEY_PATH}")
             connect_args['client_keys'] = [SSH_KEY_PATH]
+        else:
+            logger.info(f"Attempting SSH connection with system defaults for {username}@{hostname}")
+            # asyncssh will try default key locations
+        
+        # Add known_hosts if configured and exists
+        if SSH_KNOWN_HOSTS and os.path.exists(SSH_KNOWN_HOSTS):
+            connect_args['known_hosts'] = SSH_KNOWN_HOSTS
         
         return await asyncssh.connect(**connect_args)
     except Exception as e:
@@ -116,7 +145,13 @@ async def execute_remote_command(conn, command: str):
 
 @mcp.tool()
 async def ssh_connect_test(hostname: str = "", username: str = "root", port: str = "22", password: str = "", key_path: str = "") -> str:
-    """Test SSH connection to a remote server and return system information."""
+    """Test SSH connection to a remote server and return system information.
+    
+    Authentication methods (in order of priority):
+    1. Password if provided
+    2. Key path if provided
+    3. System default SSH keys
+    """
     logger.info(f"Testing SSH connection to {hostname}")
     
     if not hostname.strip():
@@ -160,7 +195,13 @@ async def ssh_connect_test(hostname: str = "", username: str = "root", port: str
 
 @mcp.tool()
 async def ssh_execute(hostname: str = "", command: str = "", username: str = "root", port: str = "22", password: str = "", key_path: str = "") -> str:
-    """Execute a single command on a remote server via SSH."""
+    """Execute a single command on a remote server via SSH.
+    
+    Authentication methods (in order of priority):
+    1. Password if provided
+    2. Key path if provided
+    3. System default SSH keys
+    """
     logger.info(f"Executing command on {hostname}: {command}")
     
     if not hostname.strip():
@@ -749,6 +790,7 @@ async def get_log_status() -> str:
 if __name__ == "__main__":
     logger.info("Starting Linux Administration MCP server...")
     logger.info(f"Log directory configured: {LOG_DIR}")
+    logger.info("SSH secrets are now optional - credentials can be provided at runtime")
     
     # Check if logs directory exists (create on first write)
     if LOG_DIR.exists():
@@ -756,11 +798,11 @@ if __name__ == "__main__":
     else:
         logger.info(f"Log directory will be created on first command: {LOG_DIR}")
     
-    # Check for SSH key
-    if os.path.exists(SSH_KEY_PATH):
-        logger.info(f"SSH key found at {SSH_KEY_PATH}")
+    # Check for SSH key (now optional)
+    if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
+        logger.info(f"Default SSH key found at {SSH_KEY_PATH}")
     else:
-        logger.warning(f"No SSH key at {SSH_KEY_PATH}. Password authentication will be required.")
+        logger.info("No default SSH key configured. Credentials must be provided at runtime.")
     
     try:
         mcp.run(transport='stdio')
