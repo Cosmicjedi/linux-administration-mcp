@@ -30,9 +30,6 @@ RUN useradd -m -u 1000 mcpuser && \
     mkdir -p /home/mcpuser/.ssh && \
     chown -R mcpuser:mcpuser /app /home/mcpuser/.ssh
 
-# Create logs directory mount point
-RUN mkdir -p /mnt/logs && chown mcpuser:mcpuser /mnt/logs
-
 # Switch to non-root user
 USER mcpuser
 

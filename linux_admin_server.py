@@ -25,8 +25,16 @@ logger = logging.getLogger("linux-admin-server")
 # Initialize MCP server
 mcp = FastMCP("linux-admin")
 
-# Configuration
-LOG_DIR = Path("/mnt/logs")
+# Configuration - LOG_DIR is now REQUIRED from environment
+LOG_DIR = os.environ.get("LOG_DIR")
+if not LOG_DIR:
+    logger.error("ERROR: LOG_DIR environment variable is required")
+    logger.error("Please set LOG_DIR to your desired logging directory path")
+    sys.exit(1)
+
+LOG_DIR = Path(LOG_DIR)
+
+# SSH Configuration
 SSH_KEY_PATH = os.environ.get("SSH_KEY_PATH", "/home/mcpuser/.ssh/id_rsa")
 SSH_KNOWN_HOSTS = os.environ.get("SSH_KNOWN_HOSTS", "/home/mcpuser/.ssh/known_hosts")
 SSH_CONFIG_PATH = os.environ.get("SSH_CONFIG_PATH", "/home/mcpuser/.ssh/config")
@@ -35,8 +43,17 @@ DEFAULT_SSH_TIMEOUT = 30
 
 # === UTILITY FUNCTIONS ===
 
+def sanitize_hostname(hostname: str) -> str:
+    """Sanitize hostname for use in filename"""
+    # Replace invalid filename characters
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    sanitized = hostname
+    for char in invalid_chars:
+        sanitized = sanitized.replace(char, '_')
+    return sanitized
+
 async def log_command(hostname: str, command: str, output: str, error: str = "", user: str = ""):
-    """Log command execution to file"""
+    """Log command execution to hostname-specific file with daily rotation"""
     timestamp = datetime.now(timezone.utc).isoformat()
     log_entry = {
         "timestamp": timestamp,
@@ -48,11 +65,15 @@ async def log_command(hostname: str, command: str, output: str, error: str = "",
         "success": not bool(error)
     }
     
-    # Create log filename with date
-    log_date = datetime.now().strftime("%Y-%m-%d")
-    log_file = LOG_DIR / f"linux_admin_{log_date}.json"
+    # Create log filename with hostname and date (hostname-MMDDYYYY.json)
+    log_date = datetime.now().strftime("%m%d%Y")
+    sanitized_hostname = sanitize_hostname(hostname)
+    log_file = LOG_DIR / f"{sanitized_hostname}-{log_date}.json"
     
     try:
+        # Create log directory if it doesn't exist
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        
         # Append to JSON lines format
         async with aiofiles.open(log_file, mode='a') as f:
             await f.write(json.dumps(log_entry) + "\n")
@@ -576,80 +597,164 @@ async def ssh_check_security(hostname: str = "", username: str = "root", port: s
         return error_msg
 
 @mcp.tool()
-async def view_command_logs(date: str = "", hostname_filter: str = "", command_filter: str = "") -> str:
-    """View command execution logs from the local logging directory."""
-    logger.info(f"Viewing command logs for date: {date}, host: {hostname_filter}, command: {command_filter}")
+async def view_command_logs(hostname_filter: str = "", date: str = "", command_filter: str = "") -> str:
+    """View command execution logs from the logging directory, organized by hostname and date."""
+    logger.info(f"Viewing logs for hostname: {hostname_filter}, date: {date}, command: {command_filter}")
     
     try:
-        # Determine log file to read
-        if date.strip():
-            log_file = LOG_DIR / f"linux_admin_{date}.json"
+        # If specific hostname and date provided, look for that file
+        if hostname_filter.strip() and date.strip():
+            sanitized_hostname = sanitize_hostname(hostname_filter)
+            log_file = LOG_DIR / f"{sanitized_hostname}-{date}.json"
+            
+            if not log_file.exists():
+                return f"📋 No log file found for {hostname_filter} on {date}"
+            
+            log_files = [log_file]
         else:
-            # Get today's log
-            log_date = datetime.now().strftime("%Y-%m-%d")
-            log_file = LOG_DIR / f"linux_admin_{log_date}.json"
-        
-        if not log_file.exists():
-            # List available log files
-            log_files = sorted(LOG_DIR.glob("linux_admin_*.json"))
-            if log_files:
-                available = "\n".join([f.name for f in log_files])
-                return f"📋 Log file not found for {date if date else 'today'}\n\nAvailable logs:\n{available}"
+            # List all matching log files
+            if hostname_filter.strip():
+                sanitized_hostname = sanitize_hostname(hostname_filter)
+                pattern = f"{sanitized_hostname}-*.json"
             else:
-                return "📋 No log files found"
+                pattern = "*.json"
+            
+            log_files = sorted(LOG_DIR.glob(pattern))
+            
+            if not log_files:
+                available = sorted(LOG_DIR.glob("*.json"))
+                if available:
+                    files_list = "\n".join([f.name for f in available[-10:]])  # Show last 10
+                    return f"📋 No matching log files found\n\nAvailable logs (recent):\n{files_list}"
+                else:
+                    return f"📋 No log files found in {LOG_DIR}"
         
         # Read and filter logs
-        entries = []
-        async with aiofiles.open(log_file, mode='r') as f:
-            async for line in f:
-                try:
-                    entry = json.loads(line.strip())
-                    
-                    # Apply filters
-                    if hostname_filter and hostname_filter.lower() not in entry.get('hostname', '').lower():
+        all_entries = []
+        for log_file in log_files:
+            async with aiofiles.open(log_file, mode='r') as f:
+                async for line in f:
+                    try:
+                        entry = json.loads(line.strip())
+                        
+                        # Apply command filter if specified
+                        if command_filter and command_filter.lower() not in entry.get('command', '').lower():
+                            continue
+                        
+                        # Add source file info
+                        entry['log_file'] = log_file.name
+                        all_entries.append(entry)
+                    except json.JSONDecodeError:
                         continue
-                    if command_filter and command_filter.lower() not in entry.get('command', '').lower():
-                        continue
-                    
-                    entries.append(entry)
-                except json.JSONDecodeError:
-                    continue
         
-        if not entries:
+        if not all_entries:
             return "📋 No matching log entries found"
         
+        # Sort by timestamp
+        all_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
         # Format output
-        results = [f"📋 Command Execution Logs from {log_file.name}"]
+        results = [f"📋 Command Execution Logs"]
+        results.append(f"Directory: {LOG_DIR}")
         results.append("=" * 60)
         
-        for entry in entries[-50:]:  # Show last 50 entries
+        # Show summary
+        unique_hosts = set(e.get('hostname', 'Unknown') for e in all_entries)
+        results.append(f"Found {len(all_entries)} entries across {len(unique_hosts)} hosts")
+        results.append("-" * 60)
+        
+        # Show last 50 entries
+        for entry in all_entries[:50]:
             timestamp = entry.get('timestamp', 'Unknown')
             hostname = entry.get('hostname', 'Unknown')
             user = entry.get('user', 'Unknown')
             command = entry.get('command', 'Unknown')
             success = entry.get('success', False)
+            log_file = entry.get('log_file', '')
             
             status = "✅" if success else "❌"
             results.append(f"\n{status} [{timestamp}]")
-            results.append(f"Host: {hostname} | User: {user}")
+            results.append(f"File: {log_file} | Host: {hostname} | User: {user}")
             results.append(f"Command: {command}")
             
             if not success and entry.get('error'):
                 results.append(f"Error: {entry['error'][:200]}")
+        
+        if len(all_entries) > 50:
+            results.append(f"\n... and {len(all_entries) - 50} more entries")
         
         return "\n".join(results)
         
     except Exception as e:
         return f"❌ Error reading logs: {str(e)}"
 
+@mcp.tool()
+async def get_log_status() -> str:
+    """Get current logging configuration and statistics."""
+    logger.info("Getting log status")
+    
+    try:
+        results = ["📊 Logging Status"]
+        results.append("=" * 60)
+        results.append(f"Log Directory: {LOG_DIR}")
+        results.append(f"Directory Exists: {LOG_DIR.exists()}")
+        
+        if LOG_DIR.exists():
+            # Get log files
+            log_files = sorted(LOG_DIR.glob("*.json"))
+            results.append(f"Total Log Files: {len(log_files)}")
+            
+            # Group by hostname
+            hostnames = {}
+            for f in log_files:
+                # Parse hostname from filename (hostname-MMDDYYYY.json)
+                parts = f.stem.rsplit('-', 1)
+                if len(parts) == 2:
+                    hostname = parts[0]
+                    date = parts[1]
+                    if hostname not in hostnames:
+                        hostnames[hostname] = []
+                    hostnames[hostname].append(date)
+            
+            results.append(f"\nHosts with Logs: {len(hostnames)}")
+            results.append("-" * 40)
+            
+            for hostname, dates in sorted(hostnames.items()):
+                results.append(f"  {hostname}: {len(dates)} log files")
+                # Show recent dates
+                recent = sorted(dates)[-3:]
+                results.append(f"    Recent: {', '.join(recent)}")
+            
+            # Calculate total size
+            total_size = sum(f.stat().st_size for f in log_files)
+            size_mb = total_size / (1024 * 1024)
+            results.append(f"\nTotal Size: {size_mb:.2f} MB")
+            
+            # Show recent activity
+            if log_files:
+                most_recent = max(log_files, key=lambda f: f.stat().st_mtime)
+                mod_time = datetime.fromtimestamp(most_recent.stat().st_mtime)
+                results.append(f"Most Recent Activity: {mod_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                results.append(f"Most Recent File: {most_recent.name}")
+        else:
+            results.append("\n⚠️ Log directory does not exist!")
+            results.append("It will be created when the first command is logged.")
+        
+        return "\n".join(results)
+        
+    except Exception as e:
+        return f"❌ Error getting log status: {str(e)}"
+
 # === SERVER STARTUP ===
 if __name__ == "__main__":
     logger.info("Starting Linux Administration MCP server...")
+    logger.info(f"Log directory configured: {LOG_DIR}")
     
-    # Check if logs directory is mounted
-    if not LOG_DIR.exists():
-        logger.warning(f"Logs directory {LOG_DIR} does not exist. Creating it...")
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # Check if logs directory exists (create on first write)
+    if LOG_DIR.exists():
+        logger.info(f"Log directory exists: {LOG_DIR}")
+    else:
+        logger.info(f"Log directory will be created on first command: {LOG_DIR}")
     
     # Check for SSH key
     if os.path.exists(SSH_KEY_PATH):
