@@ -107,8 +107,7 @@ registry:
         required: true
         description: "Directory for storing audit logs (required)"
     volumes:
-      - host: "C:\\logs"
-        container: "/mnt/logs"
+      - host: "C:\\logs:/mnt/logs"
     secrets:
       - name: SSH_PRIVATE_KEY
         env: SSH_KEY_PATH
