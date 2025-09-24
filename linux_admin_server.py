@@ -2,6 +2,7 @@
 """
 Linux Administration MCP Server - Advanced SSH-based Linux server management with comprehensive logging
 Modified to work without required SSH secrets - credentials can be provided at runtime
+Fixed async/await issues with asyncssh connections
 """
 import os
 import sys
@@ -127,7 +128,9 @@ async def establish_ssh_connection(hostname: str, port: int, username: str, pass
         if SSH_KNOWN_HOSTS and os.path.exists(SSH_KNOWN_HOSTS):
             connect_args['known_hosts'] = SSH_KNOWN_HOSTS
         
-        return await asyncssh.connect(**connect_args)
+        # Fix: Properly await the connection
+        conn = await asyncssh.connect(**connect_args)
+        return conn
     except Exception as e:
         raise Exception(f"SSH connection failed: {str(e)}")
 
@@ -182,7 +185,7 @@ async def ssh_connect_test(hostname: str = "", username: str = "root", port: str
             if exit_status == 0 and stdout:
                 info_lines.append(stdout.strip())
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(info_lines)
         await log_command(hostname, "ssh_connect_test", result, "", username)
@@ -220,7 +223,7 @@ async def ssh_execute(hostname: str = "", command: str = "", username: str = "ro
         
         stdout, stderr, exit_status = await execute_remote_command(conn, command)
         
-        await conn.close()
+        conn.close()
         
         if exit_status == 0:
             result = f"✅ Command executed successfully on {hostname}\n\nOutput:\n{stdout}"
@@ -280,7 +283,7 @@ async def ssh_diagnose_system(hostname: str = "", username: str = "root", port: 
             if stderr and exit_status != 0:
                 diagnostics.append(f"Error: {stderr.strip()}")
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(diagnostics)
         await log_command(hostname, "ssh_diagnose_system", result, "", username)
@@ -337,7 +340,7 @@ async def ssh_check_service(hostname: str = "", service_name: str = "", username
                 results.append(stdout.strip())
                 results.append("-" * 30)
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(results)
         await log_command(hostname, f"check_service:{service_name}", result, "", username)
@@ -393,7 +396,7 @@ async def ssh_manage_service(hostname: str = "", service_name: str = "", action:
         else:
             result = f"❌ Failed to {action} {service_name}\n\nError:\n{stderr}\n\nOutput:\n{stdout}"
         
-        await conn.close()
+        conn.close()
         
         await log_command(hostname, f"manage_service:{service_name}:{action}", stdout, stderr, username)
         return result
@@ -447,7 +450,7 @@ async def ssh_analyze_logs(hostname: str = "", log_path: str = "", search_term: 
         else:
             results.append("No log entries found or permission denied")
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(results)
         await log_command(hostname, f"analyze_logs:{log_path}:{search_term}", result, "", username)
@@ -505,7 +508,7 @@ async def ssh_network_diagnostics(hostname: str = "", target_host: str = "", use
             elif stderr:
                 results.append(f"Error: {stderr.strip()}")
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(results)
         await log_command(hostname, f"network_diagnostics:{target_host}", result, "", username)
@@ -552,7 +555,7 @@ async def ssh_install_package(hostname: str = "", package_name: str = "", userna
                 break
         
         if not pkg_cmd:
-            await conn.close()
+            conn.close()
             return "❌ Error: No supported package manager found (apt, yum, dnf, zypper, pacman)"
         
         results = [f"📦 Installing package: {package_name} on {hostname}"]
@@ -574,7 +577,7 @@ async def ssh_install_package(hostname: str = "", package_name: str = "", userna
             results.append(f"❌ Failed to install {package_name}")
             results.append(f"Error:\n{stderr}")
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(results)
         await log_command(hostname, f"install_package:{package_name}", stdout, stderr, username)
@@ -626,7 +629,7 @@ async def ssh_check_security(hostname: str = "", username: str = "root", port: s
             elif exit_status != 0:
                 results.append("Not available or permission denied")
         
-        await conn.close()
+        conn.close()
         
         result = "\n".join(results)
         await log_command(hostname, "security_check", result, "", username)
@@ -805,6 +808,7 @@ if __name__ == "__main__":
         logger.info("No default SSH key configured. Credentials must be provided at runtime.")
     
     try:
+        # The FastMCP framework handles async internally, so we just call run()
         mcp.run(transport='stdio')
     except Exception as e:
         logger.error(f"Server error: {e}", exc_info=True)
