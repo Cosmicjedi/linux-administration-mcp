@@ -400,6 +400,11 @@ Logs are stored in JSON Lines format (one JSON object per line):
 - Ensure service management commands are run as root or with sudo
 - Check log directory permissions on host system
 
+### Async/Await Errors
+- If you see `object NoneType can't be used in 'await' expression`, rebuild the Docker image
+- This was a known issue fixed in version 3.0.1
+- The fix ensures proper async handling in SSH connections
+
 ## Development
 
 ### Adding New Tools
@@ -460,7 +465,12 @@ For issues, questions, or suggestions:
 
 ## Changelog
 
-### Version 3.0.0 (Latest)
+### Version 3.0.1 (Latest)
+- **Fixed**: Async/await issue in SSH connection establishment
+- **Fixed**: Proper handling of asyncssh connection lifecycle
+- **Improved**: Better error handling for async operations
+
+### Version 3.0.0
 - **Breaking Change**: Removed requirement for Docker secrets
 - **New**: All SSH credentials can now be provided at runtime
 - **New**: LOG_DIR is now optional with fallback to `/tmp/linux-admin-logs`
