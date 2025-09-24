@@ -18,6 +18,7 @@ This MCP server enables AI assistants (like Claude) to connect to remote Linux s
 - **Package Management** - Install software using the appropriate package manager
 - **Security Auditing** - Check user access, open ports, firewall rules, and security configurations
 - **Audit Trail** - Complete logging of all commands with hostname-based daily rotation
+- **Runtime Credentials** - Pass SSH credentials at runtime (no Docker secrets required)
 
 ### 📊 Available Tools
 
@@ -39,7 +40,6 @@ This MCP server enables AI assistants (like Claude) to connect to remote Linux s
 - Docker MCP CLI plugin (`docker mcp` command)
 - SSH access to target Linux servers
 - SSH keys or passwords for authentication
-- A directory for storing audit logs
 
 ## Installation
 
@@ -54,19 +54,7 @@ cd linux-administration-mcp
 docker build -t linux-admin-mcp-server .
 ```
 
-### Step 3: Set Up SSH Authentication (Optional)
-```bash
-# For SSH key authentication
-docker mcp secret set SSH_PRIVATE_KEY="$(cat ~/.ssh/id_rsa)"
-
-# For password authentication
-docker mcp secret set SSH_PASSWORD="your-password"
-
-# Verify secrets
-docker mcp secret list
-```
-
-### Step 4: Create Custom Catalog
+### Step 3: Create Custom Catalog
 ```bash
 # Create catalogs directory if it doesn't exist
 mkdir -p ~/.docker/mcp/catalogs
@@ -104,17 +92,10 @@ registry:
     environment:
       - name: LOG_DIR
         value: "/mnt/logs"
-        required: true
-        description: "Directory for storing audit logs (required)"
+        required: false
+        description: "Directory for storing audit logs (optional, defaults to /tmp/linux-admin-logs)"
     volumes:
       - host: "C:\\logs:/mnt/logs"
-    secrets:
-      - name: SSH_PRIVATE_KEY
-        env: SSH_KEY_PATH
-        example: "/home/mcpuser/.ssh/id_rsa"
-      - name: SSH_PASSWORD
-        env: DEFAULT_SSH_PASSWORD
-        example: "password123"
     metadata:
       category: monitoring
       tags:
@@ -129,7 +110,7 @@ registry:
 EOF
 ```
 
-### Step 5: Update Registry
+### Step 4: Update Registry
 ```bash
 # Edit registry file to add the server
 cat >> ~/.docker/mcp/registry.yaml << 'EOF'
@@ -138,14 +119,14 @@ cat >> ~/.docker/mcp/registry.yaml << 'EOF'
 EOF
 ```
 
-### Step 6: Configure Claude Desktop
+### Step 5: Configure Claude Desktop
 
 Find your Claude Desktop config file:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 - **Linux**: `~/.config/Claude/claude_desktop_config.json`
 
-Edit the file to add the custom catalog and configure your log directory:
+Edit the file to add the custom catalog:
 
 #### Windows Example:
 ```json
@@ -160,7 +141,6 @@ Edit the file to add the custom catalog and configure your log directory:
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", "C:\\Users\\YourUsername\\.docker\\mcp:/mcp",
         "-v", "C:\\logs:/mnt/logs",
-        "-e", "LOG_DIR=/mnt/logs",
         "docker/mcp-gateway",
         "--catalog=/mcp/catalogs/docker-mcp.yaml",
         "--catalog=/mcp/catalogs/custom.yaml",
@@ -187,7 +167,6 @@ Edit the file to add the custom catalog and configure your log directory:
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", "/Users/YourUsername/.docker/mcp:/mcp",
         "-v", "/var/log/linux-admin:/mnt/logs",
-        "-e", "LOG_DIR=/mnt/logs",
         "docker/mcp-gateway",
         "--catalog=/mcp/catalogs/docker-mcp.yaml",
         "--catalog=/mcp/catalogs/custom.yaml",
@@ -201,13 +180,12 @@ Edit the file to add the custom catalog and configure your log directory:
 }
 ```
 
-**Important Configuration Notes:**
-- The `-e LOG_DIR=/mnt/logs` environment variable is **REQUIRED**
-- The volume mount `-v YOUR_HOST_PATH:/mnt/logs` maps your chosen log directory
+**Configuration Notes:**
+- The volume mount `-v YOUR_HOST_PATH:/mnt/logs` is optional but recommended for persistent logs
+- If no log directory is specified, logs will be stored in `/tmp/linux-admin-logs` inside the container
 - Replace `YourUsername` with your actual username
-- You can choose any directory on your host system for logs
 
-### Step 7: Create Your Log Directory
+### Step 6: Create Your Log Directory (Optional but Recommended)
 
 Choose and create your preferred log directory:
 
@@ -230,17 +208,44 @@ sudo chmod 755 /var/log/linux-admin
 mkdir -p ~/linux-admin-logs
 ```
 
-### Step 8: Restart Claude Desktop
+### Step 7: Restart Claude Desktop
 1. Quit Claude Desktop completely
 2. Start Claude Desktop again
 3. The Linux Administration tools should now be available!
+
+## Authentication Methods
+
+The server supports multiple authentication methods, with credentials provided at runtime:
+
+### 1. Password Authentication
+Pass the password directly in the tool call:
+```
+"Connect to server.example.com with username admin and password mypassword"
+```
+
+### 2. SSH Key Authentication
+Specify a key path in the tool call:
+```
+"Connect to server.example.com using key at /path/to/key"
+```
+
+### 3. Default SSH Keys
+If no credentials are provided, the server will attempt to use:
+- System default SSH keys (~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.)
+- Any key configured in SSH_KEY_PATH environment variable (optional)
+
+### 4. Integration with Secret Management
+Designed to work with external secret management systems. Your application can:
+1. Retrieve credentials from a secret server
+2. Pass them to the Linux Admin tools at runtime
+3. Never store credentials permanently
 
 ## Log File Organization
 
 The MCP server organizes logs with the following structure:
 - **Format**: `hostname-MMDDYYYY.json` (e.g., `webserver-01012025.json`)
 - **Rotation**: Daily - new log file created each day for each host
-- **Location**: Your configured LOG_DIR directory
+- **Location**: Configured LOG_DIR directory (defaults to `/tmp/linux-admin-logs`)
 - **Content**: JSON Lines format with all command execution details
 
 ### Log File Naming Examples:
@@ -256,31 +261,31 @@ In Claude Desktop, you can use natural language commands:
 
 ### Basic Connection Test
 ```
-"Test SSH connection to server 192.168.1.100 with username admin"
+"Test SSH connection to server 192.168.1.100 with username admin and password secret123"
 ```
 
 ### System Diagnostics
 ```
-"Connect to webserver.example.com and check if it's running properly"
-"Run full diagnostics on my database server at 10.0.0.5"
+"Connect to webserver.example.com as root with my SSH key at /home/user/.ssh/web_key and check if it's running properly"
+"Run full diagnostics on database server at 10.0.0.5 using password authentication"
 ```
 
 ### Service Management
 ```
-"Check the nginx service status on production server"
-"Restart MySQL on database.local"
+"Check the nginx service status on production server (use admin account with password)"
+"Restart MySQL on database.local using root account"
 "Stop and disable Apache on web-server-01"
 ```
 
 ### Package Installation
 ```
-"Install htop on server1.example.com"
-"Install docker on ubuntu-server.local"
+"Install htop on server1.example.com (connect as admin)"
+"Install docker on ubuntu-server.local using sudo user"
 ```
 
 ### Security Audit
 ```
-"Check for security issues on my public-facing server"
+"Check for security issues on my public-facing server (use key authentication)"
 "Show me failed login attempts on auth-server"
 "List all users with sudo access on prod-server"
 ```
@@ -316,7 +321,7 @@ MCP Gateway (Docker)
       ↓
 Linux Admin MCP Server (Container)
       ↓
-    SSH
+    SSH (with runtime credentials)
       ↓
 Remote Linux Servers
       ↓
@@ -329,9 +334,10 @@ Audit Logs (JSON) → Your Configured Directory
 ## Security Considerations
 
 ### Authentication
-- **SSH Keys**: Recommended for production use
-- **Passwords**: Stored securely in Docker Desktop secrets
-- **No Hardcoding**: Never hardcode credentials in the server code
+- **No Hardcoded Credentials**: Server never stores credentials
+- **Runtime Only**: Credentials are passed at tool invocation time
+- **Multiple Methods**: Supports passwords, SSH keys, and system defaults
+- **Secret Management Ready**: Designed to integrate with external secret servers
 
 ### Audit Logging
 - **Complete Trail**: Every command is logged with timestamp, user, and outcome
@@ -341,14 +347,15 @@ Audit Logs (JSON) → Your Configured Directory
 - **Compliance Ready**: Suitable for regulatory compliance requirements
 
 ### Best Practices
-1. Use SSH keys instead of passwords
-2. Regularly rotate SSH keys
-3. Review audit logs periodically
-4. Use specific user accounts, not always root
-5. Implement network segmentation for sensitive servers
-6. Enable firewall rules to restrict SSH access
-7. Use jump hosts for accessing production servers
-8. Set up log rotation and archiving for long-term storage
+1. Use SSH keys instead of passwords when possible
+2. Integrate with a proper secret management system
+3. Regularly rotate SSH keys and passwords
+4. Review audit logs periodically
+5. Use specific user accounts, not always root
+6. Implement network segmentation for sensitive servers
+7. Enable firewall rules to restrict SSH access
+8. Use jump hosts for accessing production servers
+9. Set up log rotation and archiving for long-term storage
 
 ## Log Format
 
@@ -367,15 +374,12 @@ Logs are stored in JSON Lines format (one JSON object per line):
 
 ## Troubleshooting
 
-### LOG_DIR Environment Variable Not Set
-- **Error**: "ERROR: LOG_DIR environment variable is required"
-- **Solution**: Ensure `-e LOG_DIR=/mnt/logs` is in your Claude Desktop config
-
 ### SSH Connection Issues
 - Verify SSH service is running on target server
 - Check firewall allows SSH port (usually 22)
 - Confirm correct hostname/IP and credentials
 - Test manual SSH connection first
+- Check if password authentication is enabled on the server
 
 ### Tools Not Appearing in Claude
 - Verify Docker image built successfully: `docker images`
@@ -384,8 +388,8 @@ Logs are stored in JSON Lines format (one JSON object per line):
 - Restart Claude Desktop completely
 
 ### Logging Issues
-- Verify LOG_DIR is set correctly
-- Check volume mount in Docker configuration
+- Check if log directory exists and is writable
+- Verify volume mount in Docker configuration
 - Ensure sufficient disk space for logs
 - Review Docker container logs: `docker logs [container_id]`
 - Use `get_log_status` tool to check configuration
@@ -402,18 +406,16 @@ Logs are stored in JSON Lines format (one JSON object per line):
 
 1. Edit `linux_admin_server.py`
 2. Add new function with `@mcp.tool()` decorator
-3. Use single-line docstrings only
-4. Return formatted strings with status indicators
-5. Update catalog with new tool name
-6. Rebuild Docker image
+3. Include password and key_path parameters for authentication
+4. Use single-line docstrings only
+5. Return formatted strings with status indicators
+6. Update catalog with new tool name
+7. Rebuild Docker image
 
 ### Testing Locally
 ```bash
-# Set environment variables
-export LOG_DIR="/tmp/test-logs"
-export SSH_KEY_PATH="/path/to/key"
-
-# Run server directly
+# Run server directly with optional log directory
+export LOG_DIR="/tmp/test-logs"  # Optional
 python linux_admin_server.py
 
 # Test MCP protocol
@@ -424,10 +426,10 @@ echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | python linux_admin_serve
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LOG_DIR` | **Yes** | None | Directory path for storing audit logs |
-| `SSH_KEY_PATH` | No | `/home/mcpuser/.ssh/id_rsa` | Path to SSH private key |
-| `SSH_KNOWN_HOSTS` | No | `/home/mcpuser/.ssh/known_hosts` | Path to known hosts file |
-| `SSH_CONFIG_PATH` | No | `/home/mcpuser/.ssh/config` | Path to SSH config file |
+| `LOG_DIR` | No | `/tmp/linux-admin-logs` | Directory path for storing audit logs |
+| `SSH_KEY_PATH` | No | None | Optional default SSH private key path |
+| `SSH_KNOWN_HOSTS` | No | None | Optional path to known hosts file |
+| `SSH_CONFIG_PATH` | No | None | Optional path to SSH config file |
 
 ## Contributing
 
@@ -458,13 +460,20 @@ For issues, questions, or suggestions:
 
 ## Changelog
 
-### Version 2.0.0 (Latest)
-- **Breaking Change**: LOG_DIR is now a required environment variable
-- Added hostname-based log file organization (hostname-MMDDYYYY.json)
+### Version 3.0.0 (Latest)
+- **Breaking Change**: Removed requirement for Docker secrets
+- **New**: All SSH credentials can now be provided at runtime
+- **New**: LOG_DIR is now optional with fallback to `/tmp/linux-admin-logs`
+- **Improved**: Better authentication flexibility with multiple methods
+- **Enhanced**: Designed for integration with external secret management systems
+- **Fixed**: Server starts successfully without any required environment variables
+
+### Version 2.0.0
+- LOG_DIR required as environment variable
+- Added hostname-based log file organization
 - Implemented daily log rotation per hostname
-- Added `get_log_status` tool for monitoring logging configuration
-- Improved `view_command_logs` to support hostname filtering
-- Enhanced log file naming with hostname sanitization
+- Added `get_log_status` tool
+- Enhanced `view_command_logs` with filtering
 
 ### Version 1.0.0
 - Initial release with core SSH management features
